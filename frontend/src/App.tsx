@@ -93,6 +93,7 @@ function Marquee({ text }: { text: string }) {
 }
 
 function ForecastChart({ data, compact }: { data: TimePoint[]; compact: boolean }) {
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   if (!data.length) return null;
   const values = data.flatMap((point) => [point.actualGeneration, point.forecastGeneration]);
   const max = Math.max(...values, 1);
@@ -105,20 +106,47 @@ function ForecastChart({ data, compact }: { data: TimePoint[]; compact: boolean 
   const y = (value: number) => pad + (1 - (value - min) / range) * (height - pad * 2);
   const path = (key: 'actualGeneration' | 'forecastGeneration') => data.map((point, index) => `${x(index)} ${y(point[key])}`).join(' L ');
   const gapPath = `M ${data.map((point, index) => `${x(index)} ${y(Math.max(point.actualGeneration, point.forecastGeneration))}`).join(' L ')} L ${data.slice().reverse().map((point, reverseIndex) => `${x(data.length - 1 - reverseIndex)} ${y(point.actualGeneration)}`).join(' L ')} Z`;
-  const tooltip = data[Math.min(2, data.length - 1)];
+
+  const pickIndex = (clientX: number, svg: SVGSVGElement) => {
+    const rect = svg.getBoundingClientRect();
+    const relX = ((clientX - rect.left) / rect.width) * width;
+    const step = (width - pad * 2) / Math.max(1, data.length - 1);
+    return Math.max(0, Math.min(data.length - 1, Math.round((relX - pad) / step)));
+  };
+
+  const onPointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
+    setHoverIndex(pickIndex(event.clientX, event.currentTarget));
+  };
+
+  const tooltip = hoverIndex === null ? null : data[hoverIndex];
+  const tooltipX = hoverIndex === null ? 0 : x(hoverIndex);
+  const tooltipWidth = 164;
+  const tooltipLeft = tooltipX > width - tooltipWidth - 24 ? tooltipX - tooltipWidth - 10 : tooltipX + 10;
+  const tooltipTop = compact ? pad + 4 : pad + 12;
+
   return <section className="chart-panel">
     <div className="panel-heading"><h3>Forecast vs outturn · 12–18 Jan</h3><div className="legend"><span className="actual">Actual</span><span className="forecast">Forecast</span><span className="gap">Over-forecast gap</span></div></div>
-    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Forecast versus actual wind generation line chart">
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label="Forecast versus actual wind generation line chart"
+      className="forecast-chart"
+      onPointerMove={onPointerMove}
+      onPointerLeave={() => setHoverIndex(null)}
+    >
       {[0, 0.25, 0.5, 0.75, 1].map((tick) => <line key={tick} x1={pad} x2={width - pad} y1={pad + tick * (height - pad * 2)} y2={pad + tick * (height - pad * 2)} className="grid-line" />)}
       <path d={gapPath} className="gap-fill" />
       <path d={`M ${path('forecastGeneration')}`} className="forecast-line" />
       <path d={`M ${path('actualGeneration')}`} className="actual-line" />
-      {!compact && tooltip ? <g className="chart-tooltip">
-        <line x1={x(2)} x2={x(2)} y1={pad} y2={height - pad} />
-        <rect x={x(2) + 10} y={pad + 12} width="164" height="58" rx="8" />
-        <text x={x(2) + 20} y={pad + 30}>{formatDate(tooltip.date)} · {tooltip.period}</text>
-        <text x={x(2) + 20} y={pad + 45}>Forecast {formatMw(tooltip.forecastGeneration)} MW</text>
-        <text x={x(2) + 20} y={pad + 60}>Actual {formatMw(tooltip.actualGeneration)} MW</text>
+      <rect className="chart-hit" x={pad} y={pad} width={width - pad * 2} height={height - pad * 2} />
+      {tooltip ? <g className="chart-tooltip">
+        <line x1={tooltipX} x2={tooltipX} y1={pad} y2={height - pad} />
+        <circle cx={tooltipX} cy={y(tooltip.forecastGeneration)} r="4" className="forecast-dot" />
+        <circle cx={tooltipX} cy={y(tooltip.actualGeneration)} r="4" className="actual-dot" />
+        <rect x={tooltipLeft} y={tooltipTop} width={tooltipWidth} height="58" rx="8" />
+        <text x={tooltipLeft + 10} y={tooltipTop + 18}>{formatDate(tooltip.date)} · {tooltip.period}</text>
+        <text x={tooltipLeft + 10} y={tooltipTop + 33}>Forecast {formatMw(tooltip.forecastGeneration)} MW</text>
+        <text x={tooltipLeft + 10} y={tooltipTop + 48}>Actual {formatMw(tooltip.actualGeneration)} MW</text>
       </g> : null}
     </svg>
   </section>;

@@ -98,7 +98,11 @@ main { min-height: 100vh; background: var(--ink-0); }
 .forecast-line { stroke: var(--forecast); }
 .actual-line { stroke: var(--actual); }
 .gap-fill { fill: rgba(249, 115, 22, .16); }
-.chart-tooltip line { stroke: rgba(238, 244, 248, .32); stroke-dasharray: 3 3; }
+.forecast-chart { touch-action: none; cursor: crosshair; }
+.chart-hit { fill: transparent; pointer-events: all; }
+.chart-tooltip line { stroke: rgba(238, 244, 248, .32); stroke-dasharray: 3 3; pointer-events: none; }
+.forecast-dot { fill: var(--forecast); stroke: var(--ink-0); stroke-width: 1.5; pointer-events: none; }
+.actual-dot { fill: var(--actual); stroke: var(--ink-0); stroke-width: 1.5; pointer-events: none; }
 .chart-tooltip rect { fill: rgba(7, 11, 20, .92); stroke: var(--line-2); }
 .chart-tooltip text { font: 11px var(--mono); fill: var(--text-2); }
 .chart-tooltip text:nth-of-type(2) { fill: var(--forecast); }
