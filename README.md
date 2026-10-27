@@ -1,35 +1,90 @@
 # Elexon Wind Forecast Intelligence
 
-Full-stack pilot dashboard for a UK utility day-ahead procurement team. It compares **Elexon BMRS** national wind **actuals** (`FUELHH`, `fuelType=WIND`) with **forecasts** (`WINDFOR`) for **January 2026**, using the latest forecast available before a **D-1 10:00 UTC** decision cutoff.
+Day-ahead wind briefing for a UK utility procurement desk. It scores the national wind forecast a buyer would have had at **D-1 10:00 UTC** against what Great Britain wind actually generated in **January 2026**.
 
-## What is included
+The question it answers is operational: how far was the forecast from outturn, in which direction, and does a later forecast run materially reduce that error before the buying decision.
 
-- **Real January 2026 Elexon data** bundled under `backend/data/seed/` (generated via `scripts/prefetch_january_2026.py`).
-- React dashboard: KPIs, forecast vs actual, daily error, intraday risk, sample table, method notes.
-- FastAPI backend: Elexon client, caching, analytics, seed + live refresh.
-- Docker Compose for local full-stack runs.
+| | |
+|---|---|
+| Live application | https://abcdefgh-hqd.vercel.app/ |
+| API | https://elexon-wind-api.onrender.com |
+| Health | https://elexon-wind-api.onrender.com/health |
+| Source | https://github.com/ishit08/abcdefgh |
 
-## Directory guide
+The default view uses a committed January 2026 extract from the public [Elexon BMRS API](https://data.elexon.co.uk/bmrs/api/v1), so the dashboard loads without calling Elexon. **Refresh from Elexon** on the live app pulls the same month again.
+
+## What the desk sees
+
+- **Briefing.** Headline error for the month, plus forecast versus outturn for 12–18 January, when a Monday morning run sat more than 6 GW above outturn.
+- **Lead time.** Mean absolute error by how far ahead the forecast was published (0–6h through 48–72h).
+- **Daily risk.** A heat strip of daily mean absolute error across 1–31 January.
+- **Desk metrics.** Mean absolute error, bias, P90 absolute error, and the share of hours inside ±1 GW.
+- **Method.** The scoring rule is shown on the page, next to the numbers.
+
+Positive bias means the forecast was above outturn. That is the volume the desk would have over-bought if it trusted the D-1 run.
+
+## How a forecast is scored
+
+Two Elexon datasets, joined on the delivery hour:
+
+| Dataset | Role |
+|---|---|
+| `FUELHH`, `fuelType=WIND` | Half-hourly national wind actuals, averaged to the delivery hour |
+| `WINDFOR` | Wind generation forecasts. For each delivery hour, the latest run published at or before **D-1 10:00 UTC** |
+
+Forecasts published from 30 December 2025 are included so 1 January has a full day-ahead window. Delivery hours run from 1 January 2026 00:00 UTC through 31 January 2026 23:00 UTC.
+
+Error is `forecast − actual`, in MW. From that series the API reports:
+
+| Metric | Definition |
+|---|---|
+| MAE | Mean absolute error |
+| RMSE | Root mean square error |
+| sMAPE | Symmetric mean absolute percentage error |
+| Bias | Mean signed error. Positive means over-forecast |
+| P90 | 90th percentile of absolute error |
+| Within 1 GW | Share of hours with absolute error below 1,000 MW |
+| ±3 GW hours | Hours with signed error beyond +3 GW or below −3 GW |
+| Horizon MAE | Absolute error by lead-time bucket |
+
+If the Elexon call fails, the API falls back to a labelled synthetic series and sets `metadata.dataMode` to `sample`. The bundled path sets it to `seed`. A live refresh sets it to `live`.
+
+## Architecture
+
+```text
+React (Vite)  →  FastAPI  →  Elexon BMRS
+     │              │
+     │              ├─ seed/     committed January 2026 extract and precomputed dashboard
+     │              └─ cache/    responses from a live refresh
+     └─ Vercel            Render
+```
+
+The default `GET /api/dashboard` returns the precomputed seed (`backend/data/seed/dashboard_january_2026.json`). `?live=true` bypasses that file, reads FUELHH and WINDFOR (seed files first, then the Elexon API when `prefer_seed` is off), and rebuilds the metrics. Live responses are cached on disk under `backend/data/cache/`.
+
+CORS allows the local Vite ports and any `*.vercel.app` origin. Set `FRONTEND_ORIGIN` when the frontend hostname is different.
+
+## Repository
 
 ```text
 backend/
-  app/                 FastAPI, Elexon client, analytics
-  data/seed/           Committed FUELHH + WINDFOR JSON for Jan 2026
-  tests/
+  app/                 FastAPI app, Elexon client, analytics
+  data/seed/           January 2026 FUELHH, WINDFOR, and precomputed dashboard
+  tests/               Analytics tests
   Dockerfile
-  Procfile             Heroku-style process file
 frontend/
   src/                 React dashboard
   Dockerfile
 scripts/
-  prefetch_january_2026.py   Re-download seed data from Elexon
+  prefetch_january_2026.py
 docker-compose.yml
-render.yaml            Example backend deploy (Render)
+render.yaml
 ```
 
-## Run locally (no Docker)
+## Run locally
 
-**Backend**
+Requires Python 3.12 and Node.js.
+
+**API**
 
 ```bash
 cd backend
@@ -39,7 +94,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-**Frontend** (second terminal)
+**Dashboard** (second terminal)
 
 ```bash
 cd frontend
@@ -47,62 +102,80 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 — default load uses **bundled Elexon seed** (not synthetic sample).
+Open http://localhost:5173. The API is at http://localhost:8000.
 
-Optional: `GET http://localhost:8000/api/dashboard?live=true` to refresh from the Elexon API (slower; uses `backend/data/cache/`).
+`pytest` is installed inside the virtual environment, not as a global command:
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest
+```
 
 ## Run with Docker
-
-Start Docker Desktop, then:
 
 ```bash
 docker compose up --build
 ```
 
-- App: http://localhost:5173  
-- API: http://localhost:8000  
+- Dashboard: http://localhost:5173
+- API: http://localhost:8000
+
+The Compose frontend is built with `VITE_API_BASE_URL=http://localhost:8000`.
+
+## Configuration
+
+Backend (`backend/.env.example`):
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `ELEXON_BASE_URL` | BMRS API root | `https://data.elexon.co.uk/bmrs/api/v1` |
+| `FRONTEND_ORIGIN` | Extra CORS origin (comma-separated) | `http://localhost:5173` |
+| `CACHE_DIR` | Live-response cache | `backend/data/cache` |
+| `USE_ELEXON_DATA` | Use Elexon rows when rebuilding | `true` |
+| `SEED_DIR` | Bundled January extract | `backend/data/seed` |
+
+Frontend (`frontend/.env.example`):
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `VITE_API_BASE_URL` | Backend origin | `http://localhost:8000` |
+
+Production uses the same variables: `FRONTEND_ORIGIN` on the API, `VITE_API_BASE_URL` on the frontend build.
 
 ## API
 
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /health` | Health check |
-| `GET /api/dashboard` | Full payload |
-| `GET /api/overview` | Cards + insights |
-| `GET /api/timeseries` | Joined series |
-| `GET /api/accuracy` | Daily + intraday metrics |
-| `GET /api/metadata` | Source + data mode |
+| Endpoint | Returns |
+|---|---|
+| `GET /health` | `{ "status": "ok" }` |
+| `GET /api/dashboard` | Full payload: metadata, cards, summary, timeseries, daily accuracy, horizon accuracy, insights |
+| `GET /api/overview` | Metadata, cards, insights |
+| `GET /api/timeseries` | Joined hourly series |
+| `GET /api/accuracy` | Daily accuracy and hourly error profile |
+| `GET /api/metadata` | Period, cutoff, source, data mode, record counts |
 
-Query `?live=true` to bypass seed and pull from Elexon (historical params: `settlementDateFrom/To` for FUELHH, `publishDateTimeFrom/To` for WINDFOR).
+Add `?live=true` to any data endpoint to rebuild from Elexon instead of the bundled dashboard. A live rebuild is slower; repeat calls hit the file cache.
 
-## Deploy (submission)
+Refresh the committed extract:
 
-1. **GitHub** — public repo with anonymous name; push this project.
-2. **Backend** — Render / Railway / Heroku from `backend/`  
-   - Start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`  
-   - Env: `FRONTEND_ORIGIN=https://your-vercel-app.vercel.app`  
-   - Env: `USE_ELEXON_DATA=true` (default)
-3. **Frontend** — Vercel, root `frontend/`  
-   - Env: `VITE_API_BASE_URL=https://your-backend-url`  
-4. Update the links below and record the **10-minute unlisted YouTube** demo (client + tech review).
+```bash
+cd backend && source .venv/bin/activate
+python ../scripts/prefetch_january_2026.py
+```
 
-### Submission links
-
-| Item | URL |
-|------|-----|
-| GitHub repository | https://github.com/ishit08/abcdefgh |
-| Live application | |
-| Backend API |  |
-| Demo video (unlisted YouTube) | |
+That rewrites `fuelhh_wind_january_2026.json` and `windfor_january_2026.json`. The precomputed dashboard file is what the default API path serves; regenerate it by calling the live dashboard endpoint and saving the JSON if the seed metrics need to match a new extract.
 
 ## Checks
 
 ```bash
-cd backend && pytest
+cd backend && source .venv/bin/activate && pytest
 cd frontend && npm run build
-python scripts/prefetch_january_2026.py   # optional refresh of seed files
 ```
 
-## AI tools disclosure
+## Stack
 
-AI tools (including Cursor) were used to design, implement, test, and document this application.
+React, TypeScript, Vite, FastAPI, pandas, NumPy, Docker. Frontend on Vercel, API on Render (`render.yaml`, root directory `backend`).
+
+## Disclosure
+
+AI tools, including Cursor, were used to design, implement, test, and document this application. The scoring rules, dataset choice, and January 2026 scope were set for this project and checked against the Elexon responses in `backend/data/seed/`.
