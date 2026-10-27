@@ -7,6 +7,7 @@ CACHE_DIR = Path(os.getenv("CACHE_DIR", ROOT / "backend/data/cache"))
 SEED_DIR = Path(os.getenv("SEED_DIR", ROOT / "backend/data/seed"))
 SEED_ACTUALS_PATH = SEED_DIR / "fuelhh_wind_january_2026.json"
 SEED_FORECASTS_PATH = SEED_DIR / "windfor_january_2026.json"
+SEED_DASHBOARD_PATH = SEED_DIR / "dashboard_january_2026.json"
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 JANUARY_2026_START = "2026-01-01T00:00:00Z"
 JANUARY_2026_END = "2026-02-01T00:00:00Z"

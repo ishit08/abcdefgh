@@ -18,6 +18,9 @@ from .config import (
 
 UTC = timezone.utc
 
+_seed_actuals_cache: list[dict[str, Any]] | None = None
+_seed_forecasts_cache: list[dict[str, Any]] | None = None
+
 
 class ElexonClient:
     def __init__(self, base_url: str = BASE_URL, cache_dir: Path = CACHE_DIR):
@@ -26,8 +29,11 @@ class ElexonClient:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     async def fetch_actuals(self, *, prefer_seed: bool = True) -> list[dict[str, Any]]:
+        global _seed_actuals_cache
         if prefer_seed and SEED_ACTUALS_PATH.exists():
-            return json.loads(SEED_ACTUALS_PATH.read_text())
+            if _seed_actuals_cache is None:
+                _seed_actuals_cache = json.loads(SEED_ACTUALS_PATH.read_text())
+            return _seed_actuals_cache
         rows: list[dict[str, Any]] = []
         for window_start, window_end in _settlement_date_windows():
             params = {
@@ -41,8 +47,11 @@ class ElexonClient:
         return _filter_start_time(rows, JANUARY_2026_START, JANUARY_2026_END)
 
     async def fetch_forecasts(self, *, prefer_seed: bool = True) -> list[dict[str, Any]]:
+        global _seed_forecasts_cache
         if prefer_seed and SEED_FORECASTS_PATH.exists():
-            return json.loads(SEED_FORECASTS_PATH.read_text())
+            if _seed_forecasts_cache is None:
+                _seed_forecasts_cache = json.loads(SEED_FORECASTS_PATH.read_text())
+            return _seed_forecasts_cache
         rows: list[dict[str, Any]] = []
         publish_start = datetime.fromisoformat(WINDFOR_PUBLISH_START.replace("Z", "+00:00"))
         publish_end = datetime.fromisoformat(JANUARY_2026_END.replace("Z", "+00:00"))

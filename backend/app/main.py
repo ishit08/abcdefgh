@@ -1,10 +1,11 @@
+import json
 import os
-
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from .analytics import build_dashboard
-from .config import FRONTEND_ORIGIN
+from .config import FRONTEND_ORIGIN, SEED_DASHBOARD_PATH
 from .elexon_client import ElexonClient
 
 app = FastAPI(title="Elexon Wind Forecast Intelligence", version="1.0.0")
@@ -18,7 +19,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 client = ElexonClient()
+_seed_dashboard: dict | None = None
+
+
+def _cached_seed_dashboard() -> dict:
+    global _seed_dashboard
+    if _seed_dashboard is None:
+        if not SEED_DASHBOARD_PATH.exists():
+            raise FileNotFoundError(f"Missing precomputed dashboard seed: {SEED_DASHBOARD_PATH}")
+        _seed_dashboard = json.loads(SEED_DASHBOARD_PATH.read_text())
+    return _seed_dashboard
 
 
 @app.get("/health")
@@ -27,6 +40,9 @@ def health() -> dict[str, str]:
 
 
 async def _dashboard(live: bool = False) -> dict:
+    if not live and SEED_DASHBOARD_PATH.exists():
+        return _cached_seed_dashboard()
+
     use_elexon = live or os.getenv("USE_ELEXON_DATA", "true").lower() in {"1", "true", "yes"}
     if use_elexon:
         try:
