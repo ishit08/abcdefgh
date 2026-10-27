@@ -86,14 +86,14 @@ Query `?live=true` to bypass seed and pull from Elexon (historical params: `sett
    - Env: `VITE_API_BASE_URL=https://your-backend-url`  
 4. Update the links below and record the **10-minute unlisted YouTube** demo (client + tech review).
 
-### Submission links (fill after deploy)
+### Submission links
 
 | Item | URL |
 |------|-----|
-| GitHub repository | _Add after push_ |
-| Live application | _Add Vercel URL_ |
-| Backend API | _Add Render/Heroku URL_ |
-| Demo video (unlisted YouTube) | _Add after recording_ |
+| GitHub repository | https://github.com/ishit08/abcdefgh |
+| Live application | |
+| Backend API |  |
+| Demo video (unlisted YouTube) | |
 
 ## Checks
 
