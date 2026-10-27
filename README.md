@@ -10,6 +10,7 @@ The question it answers is operational: how far was the forecast from outturn, i
 | API | https://elexon-wind-api.onrender.com |
 | Health | https://elexon-wind-api.onrender.com/health |
 | Source | https://github.com/ishit08/abcdefgh |
+| Youtube Walkthrough | https://youtu.be/q6mkAsQkw1Y |
 
 The default view uses a committed January 2026 extract from the public [Elexon BMRS API](https://data.elexon.co.uk/bmrs/api/v1), so the dashboard loads without calling Elexon. **Refresh from Elexon** on the live app pulls the same month again.
 
