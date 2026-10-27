@@ -34,8 +34,13 @@ def _sample_actuals() -> list[dict[str, Any]]:
 
 def _sample_forecasts(actuals: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
-    for i, actual in enumerate(actuals):
-        target = _to_utc(actual["startTime"])
+    hourly_actuals: dict[pd.Timestamp, float] = {}
+    for row in actuals:
+        ts = _to_utc(row["startTime"]).floor("h")
+        hourly_actuals.setdefault(ts, [])
+        hourly_actuals[ts].append(float(row["generation"]))
+    for i, (target, values) in enumerate(sorted(hourly_actuals.items())):
+        actual = sum(values) / len(values)
         previous_day = (target - pd.Timedelta(days=1)).normalize()
         for hour, label, bias in [(6, "early", -180), (10, "decision", -60), (15, "late", 35)]:
             publish = previous_day + pd.Timedelta(hours=hour)
@@ -43,10 +48,32 @@ def _sample_forecasts(actuals: list[dict[str, Any]]) -> list[dict[str, Any]]:
             rows.append({
                 "startTime": target.isoformat(),
                 "publishTime": publish.isoformat(),
-                "generation": round(float(actual["generation"]) + bias + noise, 2),
+                "generation": round(actual + bias + noise, 2),
                 "snapshot": label,
             })
     return rows
+
+
+def _normalize_actuals(actual_rows: list[dict[str, Any]]) -> pd.DataFrame:
+    raw = pd.DataFrame([
+        {"startTime": _to_utc(row.get("startTime")), "actualGeneration": _generation(row)}
+        for row in actual_rows if row.get("startTime") and _generation(row) is not None
+    ])
+    if raw.empty:
+        return raw
+    raw["startTime"] = raw.startTime.dt.floor("h")
+    return raw.groupby("startTime", as_index=False).agg(actualGeneration=("actualGeneration", "mean"))
+
+
+def _normalize_forecasts(forecast_rows: list[dict[str, Any]]) -> pd.DataFrame:
+    return pd.DataFrame([
+        {
+            "startTime": _to_utc(row.get("startTime")).floor("h"),
+            "publishTime": _to_utc(row.get("publishTime")),
+            "forecastGeneration": _generation(row),
+        }
+        for row in forecast_rows if row.get("startTime") and row.get("publishTime") and _generation(row) is not None
+    ])
 
 
 def build_dashboard(actual_rows: list[dict[str, Any]] | None, forecast_rows: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -54,18 +81,8 @@ def build_dashboard(actual_rows: list[dict[str, Any]] | None, forecast_rows: lis
     actual_rows = actual_rows or _sample_actuals()
     forecast_rows = forecast_rows or _sample_forecasts(actual_rows)
 
-    actuals = pd.DataFrame([
-        {"startTime": _to_utc(row.get("startTime")), "actualGeneration": _generation(row)}
-        for row in actual_rows if row.get("startTime") and _generation(row) is not None
-    ])
-    forecasts = pd.DataFrame([
-        {
-            "startTime": _to_utc(row.get("startTime")),
-            "publishTime": _to_utc(row.get("publishTime")),
-            "forecastGeneration": _generation(row),
-        }
-        for row in forecast_rows if row.get("startTime") and row.get("publishTime") and _generation(row) is not None
-    ])
+    actuals = _normalize_actuals(actual_rows)
+    forecasts = _normalize_forecasts(forecast_rows)
 
     start = pd.Timestamp("2026-01-01T00:00:00Z")
     end = pd.Timestamp("2026-02-01T00:00:00Z")
@@ -77,7 +94,6 @@ def build_dashboard(actual_rows: list[dict[str, Any]] | None, forecast_rows: lis
         forecast_rows = _sample_forecasts(actual_rows)
         return build_dashboard(actual_rows, forecast_rows)
 
-    forecasts["deliveryDate"] = forecasts.startTime.dt.date
     forecasts["decisionCutoff"] = forecasts.startTime.dt.normalize() - pd.Timedelta(days=1) + pd.Timedelta(hours=DECISION_CUTOFF_HOUR)
     eligible = forecasts[forecasts.publishTime <= forecasts.decisionCutoff].copy()
     if eligible.empty:
@@ -89,22 +105,29 @@ def build_dashboard(actual_rows: list[dict[str, Any]] | None, forecast_rows: lis
     joined["error"] = joined.forecastGeneration - joined.actualGeneration
     joined["absError"] = joined.error.abs()
     joined["ape"] = joined.absError / joined.actualGeneration.replace(0, np.nan) * 100
+    joined["smapePoint"] = 2 * joined.absError / (joined.actualGeneration.abs() + joined.forecastGeneration.abs()).replace(0, np.nan) * 100
     joined["date"] = joined.startTime.dt.strftime("%Y-%m-%d")
     joined["period"] = joined.startTime.dt.strftime("%H:%M")
+    joined["hour"] = joined.startTime.dt.hour
+    joined["leadHours"] = (joined.startTime - joined.publishTime).dt.total_seconds() / 3600
 
     mae = float(joined.absError.mean())
     rmse = float(np.sqrt(np.mean(np.square(joined.error))))
     bias = float(joined.error.mean())
-    smape = float((2 * joined.absError / (joined.actualGeneration.abs() + joined.forecastGeneration.abs())).mean() * 100)
+    smape = float(joined.smapePoint.mean())
     coverage = float(len(joined) / len(actuals) * 100)
     p90 = float(joined.absError.quantile(0.9))
+    within_1gw = float((joined.absError < 1000).mean() * 100)
+    over_3gw = int((joined.error > 3000).sum())
+    under_3gw = int((joined.error < -3000).sum())
+    mean_actual = float(joined.actualGeneration.mean())
 
     daily = joined.groupby("date").agg(
         actualGeneration=("actualGeneration", "mean"),
         forecastGeneration=("forecastGeneration", "mean"),
         mae=("absError", "mean"),
         bias=("error", "mean"),
-        smape=("ape", "mean"),
+        smape=("smapePoint", "mean"),
     ).reset_index()
     profile = joined.groupby("period").agg(mae=("absError", "mean"), bias=("error", "mean")).reset_index()
 
@@ -113,11 +136,21 @@ def build_dashboard(actual_rows: list[dict[str, Any]] | None, forecast_rows: lis
         count=("forecastGeneration", "count"),
         avgLeadHours=("leadHours", "mean"),
     ).reset_index().rename(columns={"publishTime": "publishPeriod"})
+    horizon = snapshots.merge(actuals, on="startTime", how="inner")
+    horizon["error"] = horizon.forecastGeneration - horizon.actualGeneration
+    horizon["absError"] = horizon.error.abs()
+    horizon["bucket"] = pd.cut(horizon.leadHours, bins=[0, 6, 12, 24, 36, 48, 72], labels=["0-6h", "6-12h", "12-24h", "24-36h", "36-48h", "48-72h"])
+    horizon_accuracy = horizon.dropna(subset=["bucket"]).groupby("bucket", observed=True).agg(
+        mae=("absError", "mean"),
+        bias=("error", "mean"),
+        count=("error", "count"),
+    ).reset_index().assign(bucket=lambda df: df.bucket.astype(str))
 
     worst_day = daily.sort_values("mae", ascending=False).iloc[0]
+    best_day = daily.sort_values("mae", ascending=True).iloc[0]
     bias_direction = "over-forecasting" if bias > 0 else "under-forecasting"
     insights = [
-        f"Decision-time forecast coverage is {coverage:.1f}% of January half-hourly periods.",
+        f"Decision-time forecast coverage is {coverage:.1f}% of January hourly periods.",
         f"Average absolute error is {mae:.0f} MW, with P90 absolute error of {p90:.0f} MW.",
         f"The model shows net {bias_direction} of {abs(bias):.0f} MW on average.",
         f"Highest daily MAE occurs on {worst_day['date']} at {worst_day['mae']:.0f} MW.",
@@ -128,8 +161,10 @@ def build_dashboard(actual_rows: list[dict[str, Any]] | None, forecast_rows: lis
             "period": "January 2026",
             "decisionCutoff": f"D-1 {DECISION_CUTOFF_HOUR:02d}:00 UTC",
             "source": "Elexon BMRS FUELHH and WINDFOR datasets",
+            "resolution": "Hourly forecast scored against hourly mean actual generation",
             "sampleFallback": using_sample_data,
             "records": int(len(joined)),
+            "actualRecords": int(len(actuals)),
             "generatedAt": datetime.now(timezone.utc).isoformat(),
         },
         "cards": [
@@ -138,14 +173,27 @@ def build_dashboard(actual_rows: list[dict[str, Any]] | None, forecast_rows: lis
             {"label": "sMAPE", "value": round(smape, 2), "unit": "%", "help": "Scale-aware forecast error percentage."},
             {"label": "Bias", "value": round(bias, 1), "unit": "MW", "help": "Positive means forecast above actual."},
             {"label": "P90 Error", "value": round(p90, 1), "unit": "MW", "help": "Nine out of ten periods miss by less than this."},
-            {"label": "Coverage", "value": round(coverage, 1), "unit": "%", "help": "Actual periods matched to decision-time forecasts."},
+            {"label": "Within 1GW", "value": round(within_1gw, 1), "unit": "%", "help": "Hours where absolute error is below 1 GW."},
         ],
-        "timeseries": joined[["date", "period", "startTime", "actualGeneration", "forecastGeneration", "error", "absError", "publishTime"]].assign(
+        "summary": {
+            "mae": round(mae, 1),
+            "rmse": round(rmse, 1),
+            "bias": round(bias, 1),
+            "p90": round(p90, 1),
+            "within1gw": round(within_1gw, 1),
+            "over3gwHours": over_3gw,
+            "under3gwHours": under_3gw,
+            "meanActual": round(mean_actual, 1),
+            "worstDay": {"date": worst_day["date"], "mae": round(float(worst_day["mae"]), 1)},
+            "bestDay": {"date": best_day["date"], "mae": round(float(best_day["mae"]), 1)},
+        },
+        "timeseries": joined[["date", "period", "startTime", "actualGeneration", "forecastGeneration", "error", "absError", "publishTime", "leadHours"]].assign(
             startTime=lambda df: df.startTime.dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
             publishTime=lambda df: df.publishTime.dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
         ).round(2).to_dict("records"),
         "daily_accuracy": daily.round(2).to_dict("records"),
         "half_hour_profile": profile.round(2).to_dict("records"),
         "forecast_snapshots": snapshot_summary.round(2).to_dict("records"),
+        "horizon_accuracy": horizon_accuracy.round(2).to_dict("records"),
         "insights": insights,
     }
