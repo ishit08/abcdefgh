@@ -172,7 +172,7 @@ function DailyHeatStrip({ data }: { data: DailyAccuracy[] }) {
   const min = Math.min(...data.map((day) => day.mae), 0);
   return <section className="heat-panel">
     <div className="panel-heading"><h3>Daily mean absolute error</h3><span>Worst day: {formatDate([...data].sort((a, b) => b.mae - a.mae)[0]?.date ?? '')}</span></div>
-    <div className="heat-strip">
+    <div className="heat-strip" style={{ gridTemplateColumns: `repeat(${data.length}, minmax(0, 1fr))` }}>
       {data.map((day) => {
         const ratio = (day.mae - min) / (max - min || 1);
         const level = ratio > 0.66 ? 'hot' : ratio > 0.33 ? 'mid' : 'cool';
